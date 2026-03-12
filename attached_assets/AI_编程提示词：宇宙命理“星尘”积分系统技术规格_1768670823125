@@ -1,0 +1,129 @@
+# AI 编程提示词：宇宙命理“星尘”积分系统技术规格
+
+**目标**：实现一个基于订阅和消耗的“星尘”（Stardust）积分系统。
+
+## 1. 数据模型定义 (Database Schema)
+
+请基于 PostgreSQL 数据库，实现以下核心表结构：
+
+### 1.1 积分账户表 (`stardust_accounts`)
+
+| 字段名 | 类型 | 约束 | 描述 |
+| --- | --- | --- | --- |
+| `user_id` | UUID | PRIMARY KEY, FK to `users.id` | 用户唯一标识 |
+| `balance` | INT | DEFAULT 0 | 当前积分余额 |
+| `total_earned` | INT | DEFAULT 0 | 累计获得积分 |
+| `total_spent` | INT | DEFAULT 0 | 累计消耗积分 |
+| `updated_at` | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP | 最后更新时间 |
+
+### 1.2 积分流水表 (`stardust_logs`)
+
+| 字段名 | 类型 | 约束 | 描述 |
+| --- | --- | --- | --- |
+| `id` | BIGSERIAL | PRIMARY KEY | 流水记录 ID |
+| `user_id` | UUID | FK to `users.id` | 用户 ID |
+| `action_type` | VARCHAR(50) | NOT NULL | 行为类型 (e.g., 'check_in', 'api_call_bazi', 'subscription_bonus') |
+| `amount` | INT | NOT NULL | 变动数额 (正数: 获得, 负数: 消耗) |
+| `description` | TEXT |  | 详细描述 |
+| `created_at` | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP | 记录创建时间 |
+
+### 1.3 订阅计划表 (`subscription_plans`)
+
+请确保该表包含以下字段，用于关联积分配额：
+
+| 字段名 | 类型 | 约束 | 描述 |
+| --- | --- | --- | --- |
+| `name` | VARCHAR(50) |  | 计划名称 (e.g., 'Pro', 'Elite') |
+| `monthly_credit_quota` | INT | NOT NULL | 每月赠送的积分额度 |
+
+## 2. 核心业务逻辑与 API 规范
+
+### 2.1 积分消耗 API (`POST /api/stardust/consume`)
+
+**功能**：在用户执行需要消耗积分的操作前，调用此 API 进行扣费和权限校验。
+
+| 参数名 | 类型 | 描述 | 示例值 |
+| --- | --- | --- | --- |
+| `user_id` | UUID | 用户 ID |  |
+| `action_type` | VARCHAR | 消耗行为类型 | 'api_call_bazi' |
+| `required_amount` | INT | 需要消耗的积分数 | 20 |
+
+**逻辑**：
+
+1. 检查 `stardust_accounts.balance` 是否 **>= ****`required_amount`**。
+
+1. 如果余额不足，返回 **HTTP 402 Payment Required**。
+
+1. 如果余额充足，原子性地扣除积分，并记录到 `stardust_logs`。
+
+1. 返回 **HTTP 200 OK**。
+
+### 2.2 积分获取 API (`POST /api/stardust/earn`)
+
+**功能**：用户完成激励行为后，调用此 API 增加积分。
+
+| 参数名 | 类型 | 描述 | 示例值 |
+| --- | --- | --- | --- |
+| `user_id` | UUID | 用户 ID |  |
+| `action_type` | VARCHAR | 获得行为类型 | 'check_in' |
+| `amount` | INT | 获得的积分数 | 5 |
+
+**逻辑**：
+
+1. 执行业务逻辑校验（如：`action_type='check_in'` 需校验当日是否已签到）。
+
+1. 原子性地增加积分，并记录到 `stardust_logs`。
+
+1. 返回 **HTTP 200 OK**。
+
+### 2.3 订阅配额刷新逻辑 (Monthly Quota Refresh)
+
+**触发机制**：每月 1 日 00:00 UTC 自动执行，或在用户订阅成功/续费成功时触发。
+
+**逻辑**：
+
+1. 查询所有 `user_subscriptions` 状态为 **'active'** 的用户。
+
+1. 根据用户的 `plan_id` 查找 `subscription_plans.monthly_credit_quota`。
+
+1. 调用积分获取 API (`/api/stardust/earn`)，`action_type` 设为 **'subscription_bonus'**，`amount` 为配额值。
+
+1. **重要**：如果用户当前余额低于配额值，则将余额设置为配额值（防止用户在月底消耗完积分后，下月配额叠加）。
+
+## 3. 核心业务规则 (Business Rules)
+
+### 3.1 积分消耗标准
+
+| 功能行为 | `action_type` | 消耗积分 (`required_amount`) |
+| --- | --- | --- |
+| 每日运势生成 | `api_call_daily_fortune` | **5** |
+| 十二时辰运势 | `api_call_hourly_fortune` | **10** |
+| AI 深度占卜 | `api_call_ai_deep_query` | **20** |
+| 八字深度解读 | `api_call_bazi_deep_read` | **20** |
+| 切换文化解读 | `api_call_culture_switch` | **15** |
+
+### 3.2 积分获取规则
+
+| 行为 | `action_type` | 获得积分 (`amount`) | 频率/限制 |
+| --- | --- | --- | --- |
+| 初始免费赠送 | `initial_free_gift` | **200** | 仅限注册时 1 次 |
+| 每日签到 | `check_in` | **5** | 1 次 / 日 |
+| 邀请好友 | `referral_success` | **200** | 无上限，但需校验被邀请人已完成 **“八字信息录入”** |
+
+### 3.3 订阅配额
+
+| 订阅等级 | `monthly_credit_quota` |
+| --- | --- |
+| **星系探索者 (Pro)** | **1,200** |
+| **宇宙主宰 (Elite)** | **4,000** |
+
+## 4. 额外要求 (Additional Requirements)
+
+1. **原子性**：所有积分变动操作（获取/消耗）必须是原子性的，确保数据一致性。
+
+1. **防作弊**：在处理 `referral_success` 行为时，必须在后端校验被邀请人的状态，防止虚假注册。
+
+1. **用户通知**：在积分消耗成功或失败时，应触发一个小弹窗告知用户。
+
+1. **过期机制**：订阅赠送的积分应设置 **90 天** 有效期，过期后自动扣除。
+
