@@ -1,0 +1,82 @@
+# 宇宙命理 RAG 架构设计：基于命理协议的知识库增强生成
+
+## 1. 架构目标
+
+确保所有 AI 解读（八字、合盘、运势）都严格遵循用户上传的“命理协议文件”中的知识体系、术语和解读风格，实现知识库的动态更新。
+
+## 2. 核心组件与流程 (RAG Pipeline)
+
+### 2.1 知识库管理接口
+
+| 接口 | 描述 | 关键逻辑 |
+| :--- | :--- | :--- |
+| `POST /api/knowledge/upload` | **上传命理协议文件** | 接收文件（支持 .pdf, .md, .txt），进行分块（Chunking），并使用 OpenAI Embedding API 将每个块转换为向量，存储到向量数据库（Vector DB）。 |
+| `POST /api/knowledge/update` | **更新知识库** | 接收新文件，删除旧知识库的全部向量，重复上传流程。 |
+| `GET /api/knowledge/status` | **查询状态** | 返回当前知识库的版本 ID 和最后更新时间。 |
+
+### 2.2 向量数据库 (Vector DB)
+
+*   **用途**：存储命理协议文件的向量化表示。
+*   **数据结构**：`[vector_id, embedding_vector, original_text_chunk, source_file_id]`
+
+### 2.3 AI 解读流程 (RAG Pipeline)
+
+每次用户请求 AI 解读时，后端必须执行以下 **4 步** 流程：
+
+1.  **用户查询**：接收用户请求（例如：`action_type='api_call_bazi_deep_read'`, `user_data={八字数据}`）。
+2.  **检索 (Retrieval)**：
+    *   将用户查询和八字数据转化为一个**检索查询**。
+    *   在向量数据库中搜索与该查询最相关的 **Top K** 个知识块（例如 K=5）。
+3.  **增强 (Augmentation)**：
+    *   将检索到的 Top K 知识块合并成一个字符串，作为 **“上下文”**。
+    *   构建最终的 **Prompt**，结构如下：
+        ```
+        你是一位专业的命理大师，你的解读必须严格遵循以下提供的【命理协议】。
+        
+        【命理协议】:
+        [这里插入检索到的 Top K 知识块]
+        
+        【用户请求】:
+        [这里插入用户八字数据和解读请求]
+        
+        请根据【命理协议】和【用户请求】进行解读。
+        ```
+4.  **生成 (Generation)**：将增强后的 Prompt 发送给 OpenAI API (`gpt-4o`) 进行最终的 AI 解读。
+
+## 3. AI 编程提示词 (Technical Specification)
+
+请在核心 AI 接口（如 `/api/ai/interpret`）中实现上述 RAG 流程。
+
+### 3.1 知识库上传与更新指令
+
+**目标**：实现一个文件上传接口，用于管理命理协议知识库。
+
+1.  **依赖**：确保环境已安装并配置了向量数据库客户端（如 `pgvector` 或 `Pinecone`）和 OpenAI SDK。
+2.  **接口**：实现 `POST /api/knowledge/update`。
+3.  **逻辑**：
+    *   接收文件，验证格式（.pdf, .md, .txt）。
+    *   **清空**旧知识库。
+    *   使用 `RecursiveCharacterTextSplitter` 等工具将文件内容分割成大小适中的块（Chunk Size: 512 tokens, Overlap: 50 tokens）。
+    *   使用 `OpenAIEmbedding` 模型（如 `text-embedding-3-small`）将每个块向量化。
+    *   将向量和原始文本块存储到向量数据库。
+
+### 3.2 AI 解读接口指令
+
+**目标**：修改所有 AI 解读接口，使其在调用 OpenAI 前执行 RAG 检索。
+
+1.  **检索步骤**：在构建 OpenAI Prompt 之前，必须执行向量检索。
+2.  **检索查询**：检索查询应包含用户请求的**核心意图**和**关键命理数据**（如日主、用神等）。
+3.  **Prompt 模板**：使用以下模板构建最终 Prompt：
+    ```python
+    SYSTEM_PROMPT = (
+        "你是一位专业的命理大师，你的解读必须严格遵循提供的【命理协议】。 "
+        "请使用中文进行解读，风格应专业、严谨、富有洞察力。"
+    )
+    
+    RAG_CONTEXT = f"【命理协议】:\n{retrieved_knowledge_chunks}"
+    
+    USER_REQUEST = f"【用户请求】:\n{user_input_data}"
+    
+    FINAL_PROMPT = f"{SYSTEM_PROMPT}\n\n{RAG_CONTEXT}\n\n{USER_REQUEST}"
+    ```
+4.  **模型**：使用 `gpt-4o` 或 `gpt-4o-mini`（根据用户订阅等级）。
